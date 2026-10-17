@@ -1,0 +1,328 @@
+return function(env)
+local C = env.C
+local _cs = env._cs
+local _nvL = env._nvL
+local _nvN = env._nvN
+local createInstance = env.createInstance
+local makeFloatingPanel = env.makeFloatingPanel
+local makePanelTitleBar = env.makePanelTitleBar
+local players = env.players
+local tween = env.tween
+	local hs2 = game:GetService("HttpService")
+	local ts2 = game:GetService("TeleportService")
+
+	local SCAN_PAGES = 8
+	local MAX_RETRIES = 15
+	local MIN_PC_MOST = 8
+	local MIN_PC_LOW = 2
+
+	local shMode = "most"
+	local shRunning = false
+	local shStopped = false
+	local shRetries = 0
+	local shExcluded = {}
+	local shTarget = nil
+
+	local VF = "VisitedServers_"..game.PlaceId..".json"
+	local function shLoad()
+		local ok, r = pcall(function()
+			if not isfolder("ServerHistory") then makefolder("ServerHistory") end
+			local fp = "ServerHistory/"..VF
+			return isfile(fp) and hs2:JSONDecode(readfile(fp)) or {}
+		end)
+		return ok and r or {}
+	end
+	local function shSave(vs)
+		pcall(function()
+			if not isfolder("ServerHistory") then makefolder("ServerHistory") end
+			writefile("ServerHistory/"..VF, hs2:JSONEncode(vs))
+		end)
+	end
+	local function shMarkCurrent(vs)
+		local jid = game.JobId
+		if jid ~= "" then
+			vs[jid] = {timestamp=os.time(), playerCount=#players:GetPlayers()}
+			shSave(vs)
+		end
+	end
+
+	local shPanel = makeFloatingPanel(320, 182, 0.5, 0.38)
+	shPanel.Name = "ServerhopPanel"
+
+	local shBar = makePanelTitleBar(shPanel, "SERVERHOP", function() shPanel.Visible = false end)
+	_cs.makePanelDraggable(shPanel, shBar)
+
+	local Pk = _cs.nvPop
+	local STATUS_Y = 44
+
+	local statusChip = Pk.group(shPanel, 18, STATUS_Y, 284, 56)
+	statusChip.Name = "Status"
+
+	local statusDot = createInstance("Frame", {
+		Parent = statusChip,
+		Size = UDim2.new(0, 8, 0, 8),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		AnchorPoint = Vector2.new(0, 0.5),
+		BackgroundColor3 = C.DIM,
+		BorderSizePixel = 0,
+		ZIndex = 155,
+	})
+	createInstance("UICorner", { Parent = statusDot, CornerRadius = UDim.new(1, 0) })
+
+	local statusLbl = Pk.text(statusChip, "Idle", Enum.Font.GothamBold, 13, C.TEXT, 34, 10, 284 - 34 - 100, 18)
+	local statsLbl = Pk.text(statusChip, "", Enum.Font.GothamMedium, 11, Pk.SUBTLE, 34, 29, 284 - 34 - 100, 14)
+	local function shPlaceStatus()
+		statusLbl.Position = UDim2.fromOffset(34, statsLbl.Text == "" and 19 or 10)
+	end
+	statsLbl:GetPropertyChangedSignal("Text"):Connect(shPlaceStatus)
+	shPlaceStatus()
+
+	local modeChipBg = createInstance("Frame", {
+		Parent = statusChip,
+		Name = "ModeChip",
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -12, 0.5, 0),
+		Size = UDim2.new(0, 76, 0, 28),
+		BackgroundColor3 = Pk.TINT.gray[1],
+		BorderSizePixel = 0,
+		ZIndex = 155,
+	})
+	Pk.round(modeChipBg, 14)
+	do
+		local rim = createInstance("UIStroke", {
+			Parent = modeChipBg,
+			ApplyStrokeMode = Enum.ApplyStrokeMode.Border,
+			Color = Color3.new(1, 1, 1),
+			Transparency = 0.9,
+			Thickness = 1,
+		})
+	end
+	local modePill = createInstance("TextLabel", {
+		Parent = modeChipBg,
+		Size = UDim2.new(1, 0, 1, 0),
+		BackgroundColor3 = C.ACCENT,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextColor3 = C.TEXT,
+		Text = "Most",
+		TextXAlignment = Enum.TextXAlignment.Center,
+		TextYAlignment = Enum.TextYAlignment.Center,
+		ZIndex = 156,
+	})
+	local modePillStroke = {Color = C.ACCENT}
+
+	local PROG_Y = STATUS_Y + 56 + 12
+	local progTrack = createInstance("Frame", {
+		Parent = shPanel,
+		Size = UDim2.new(1, -36, 0, 4),
+		Position = UDim2.new(0, 18, 0, PROG_Y),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.85,
+		BorderSizePixel = 0,
+		ZIndex = 152,
+	})
+	createInstance("UICorner", { Parent = progTrack, CornerRadius = UDim.new(1, 0) })
+
+	local progFill = createInstance("Frame", {
+		Parent = progTrack,
+		Size = UDim2.new(0, 0, 1, 0),
+		BackgroundColor3 = C.ACCENT,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		ZIndex = 153,
+	})
+	do
+		local bar = createInstance("Frame", {
+			Parent = progFill,
+			Name = "Bar",
+			Size = UDim2.fromScale(1, 1),
+			BorderSizePixel = 0,
+			BackgroundColor3 = Color3.new(1, 1, 1),
+			ZIndex = 154,
+		})
+		createInstance("UICorner", { Parent = bar, CornerRadius = UDim.new(1, 0) })
+	end
+
+	local BTN_Y = PROG_Y + 4 + 12
+	local BTN_H = 36
+
+	local retryBtn = createInstance("TextButton", {
+		Parent = shPanel,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		TextColor3 = C.TEXT,
+		Text = "Search Again",
+		ZIndex = 152,
+	})
+	Pk.cta(retryBtn, 18, BTN_Y, 284, BTN_H)
+
+	local function shCleanStatus(msg)
+		msg = tostring(msg or "")
+		msg = msg:gsub("\226\128\166", "..."):gsub("%s+,%s+", ": ")
+		return msg
+	end
+
+	local function shSetStatus(msg, prog, dotColor)
+		tween(statusLbl, TweenInfo.new(0.12, Enum.EasingStyle.Quint), {TextTransparency = 0.8})
+		task.delay(0.10, function()
+			if not statusLbl.Parent then return end
+			statusLbl.Text = shCleanStatus(msg)
+			tween(statusLbl, TweenInfo.new(0.18, Enum.EasingStyle.Quint), {TextTransparency = 0})
+		end)
+		if dotColor then
+			tween(statusDot, TweenInfo.new(0.2, Enum.EasingStyle.Quint), {BackgroundColor3 = dotColor})
+		end
+		if prog then
+			tween(progFill, TweenInfo.new(0.55, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+				{Size = UDim2.new(math.clamp(prog, 0.02, 1), 0, 1, 0)})
+		end
+	end
+
+	local function shApplyMode(m)
+		shMode = m
+		local col = m == "most" and C.ACCENT or C.ACTION
+		modePill.Text = m == "most" and "Most" or "Fewest"
+		tween(modePill,      TweenInfo.new(0.22, Enum.EasingStyle.Quint), {BackgroundColor3 = col})
+		tween(progFill,      TweenInfo.new(0.22, Enum.EasingStyle.Quint), {BackgroundColor3 = col})
+		tween(retryBtn,      TweenInfo.new(0.22, Enum.EasingStyle.Quint), {BackgroundColor3 = col})
+		modePillStroke.Color = col
+	end
+
+	local function shFetchServers()
+		local all = {} ; local cursor = "" ; local page = 0
+		repeat
+			if shStopped then break end
+			local ok, result = false, nil ; local tries = 0
+			repeat
+				tries = _nvN(tries) + 1
+				ok, result = pcall(function()
+					local u = "https://games.roblox.com/v1/games/"..tostring(_G._nv_serverCtx.pid).."/servers/Public?sortOrder=Desc&limit=100"
+					if cursor ~= "" then u = u.."&cursor="..cursor end
+					return hs2:JSONDecode(game:HttpGet(u))
+				end)
+				if not ok then task.wait(tries * 0.4) end
+			until ok or tries >= 3
+			if ok and result and result.data then
+				for _, sv in result.data do
+					if sv.id and sv.playing and sv.maxPlayers then table.insert(all, sv) end
+				end
+				cursor = result.nextPageCursor or ""
+				page = _nvN(page) + 1
+				local col = shMode == "most" and C.ACCENT or C.ACTION
+				shSetStatus("Scanning... page "..page.."/"..SCAN_PAGES, 0.1 + (page/SCAN_PAGES)*0.38, col)
+				statsLbl.Text = #all.." servers found"
+				task.wait(0.1)
+			else
+				cursor = ""
+			end
+		until cursor == "" or page >= SCAN_PAGES
+		return all
+	end
+
+	local function shFindBest(servers, visited, excluded, mode)
+		local minPc = mode == "most" and MIN_PC_MOST or MIN_PC_LOW
+		local maxPc = math.floor(players.MaxPlayers * 0.95)
+		local cands = {}
+		for _, sv in servers do
+			if excluded[sv.id] or sv.id == _G._nv_serverCtx.jid then continue end
+			local pc = sv.playing or 0 ; local mp = sv.maxPlayers or players.MaxPlayers
+			if pc < minPc or (mp - pc) < 1 or pc > maxPc then continue end
+			local score = mode == "most" and pc or -pc
+			if visited[sv.id] then
+				local age = os.time() - visited[sv.id].timestamp
+				if age < 1800 then score -= 500 elseif age < 3600 then score -= 200 end
+			else score = _nvN(score) + 100 end
+			table.insert(cands, {server=sv, score=score, pc=pc})
+		end
+		table.sort(cands, function(a, b) return a.score > b.score end)
+		return cands[1] and cands[1].server or nil, cands[1] and cands[1].pc or 0
+	end
+
+	local function shHop()
+		if shRunning then return end
+		shRunning = true ; shStopped = false
+		local acol = shMode == "most" and C.ACCENT or C.ACTION
+
+		local vs = shLoad() ; shMarkCurrent(vs)
+		shSetStatus("Loading server list...", 0.04, C.DIM)
+		statsLbl.Text = ""
+
+		local allServers = shFetchServers()
+		if shStopped then shRunning = false ; return end
+		if #allServers == 0 then
+			shSetStatus("No servers found.", 1, C.DANGER)
+			shRunning = false ; return
+		end
+
+		shSetStatus("Analyzing "..#allServers.." servers...", 0.5, acol)
+		task.wait(0.08)
+
+		local target, targetPc = shFindBest(allServers, vs, shExcluded, shMode)
+		local pass = 0
+		while not target and pass < 3 do
+			pass = _nvN(pass) + 1
+			shSetStatus("Expanding search ("..pass.."/3)...", 0.6, acol)
+			if pass >= 2 then vs = {} end
+			target, targetPc = shFindBest(allServers, {}, shExcluded, shMode)
+		end
+
+		if not target then
+			shSetStatus("No suitable server found.", 1, C.DANGER)
+			shRunning = false ; return
+		end
+
+		local desc = shMode == "most" and (targetPc.." players") or (targetPc.." players")
+		shSetStatus("Found ,  "..desc, 0.92, acol)
+		statsLbl.Text = "Attempt "..(shRetries + 1).."/"..MAX_RETRIES
+		task.wait(0.6)
+
+		shSetStatus("Connecting...", 1, acol)
+		shTarget = target
+		local ok = pcall(function() ts2:TeleportToPlaceInstance(_G._nv_serverCtx.pid, target.id, _nvL.lp) end)
+		if not ok then
+			shExcluded[target.id] = true ; shRetries = _nvN(shRetries) + 1
+			if shRetries < MAX_RETRIES then
+				shSetStatus("Connection failed, retrying...", 0.5, C.DIM)
+				task.wait(1) ; shRunning = false ; shHop()
+			else
+				shSetStatus("Max attempts reached.", 1, C.DANGER) ; shRunning = false
+			end
+		end
+	end
+
+	ts2.TeleportInitFailed:Connect(function(pl, tr)
+		if pl ~= _nvL.lp then return end
+		local fr = tr.Name
+		if fr == "GameEnded" or fr == "GameFull" or fr == "Unauthorized" then
+			if shRetries < MAX_RETRIES and not shStopped then
+				shRetries = _nvN(shRetries) + 1
+				if shTarget then shExcluded[shTarget.id] = true end
+				local acol = shMode == "most" and C.ACCENT or C.ACTION
+				shSetStatus("Retrying ("..shRetries.."/"..MAX_RETRIES..")...", 0.42, acol)
+				statsLbl.Text = "Attempt "..shRetries.."/"..MAX_RETRIES
+				task.delay(1, function() shRunning = false ; shHop() end)
+			else
+				shSetStatus("No server found after "..MAX_RETRIES.." attempts.", 1, C.DANGER)
+				shRunning = false
+			end
+		else
+			shSetStatus("Teleport error: "..fr, 1, C.DANGER) ; shRunning = false
+		end
+	end)
+
+	retryBtn.MouseButton1Click:Connect(function()
+		shStopped = false ; shRunning = false
+		shRetries = 0 ; shExcluded = {} ; shTarget = nil
+		task.spawn(shHop)
+	end)
+
+	_G._shHop = function(mode)
+		shApplyMode(mode)
+		shRetries = 0 ; shExcluded = {} ; shTarget = nil
+		shRunning = false ; shStopped = false
+		shPanel.Visible = true
+		task.spawn(shHop)
+	end
+end
